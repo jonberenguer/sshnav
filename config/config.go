@@ -177,11 +177,11 @@ func LoadSSHConfigProfiles() ([]Profile, error) {
 			}
 		case "localforward":
 			if current != nil {
-				current.LocalForwards = append(current.LocalForwards, val)
+				current.LocalForwards = append(current.LocalForwards, normalizeForwardSpec(val))
 			}
 		case "remoteforward":
 			if current != nil {
-				current.RemoteForwards = append(current.RemoteForwards, val)
+				current.RemoteForwards = append(current.RemoteForwards, normalizeForwardSpec(val))
 			}
 		}
 	}
@@ -189,6 +189,20 @@ func LoadSSHConfigProfiles() ([]Profile, error) {
 		profiles = append(profiles, *current)
 	}
 	return profiles, scanner.Err()
+}
+
+// normalizeForwardSpec converts ~/.ssh/config space-separated port-forward
+// specs into the colon-separated format required by ssh(1) -L / -R flags.
+//
+//	"9090 localhost:80"           → "9090:localhost:80"
+//	"127.0.0.1:8080 localhost:80" → "127.0.0.1:8080:localhost:80"
+//	"9090:localhost:80"           → "9090:localhost:80"  (already correct, unchanged)
+func normalizeForwardSpec(val string) string {
+	i := strings.Index(val, " ")
+	if i >= 0 {
+		return val[:i] + ":" + val[i+1:]
+	}
+	return val
 }
 
 // LoadAllProfiles merges app + ssh/config profiles. App profiles listed first.

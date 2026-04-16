@@ -3,10 +3,13 @@ package sshutil
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"sshnav/config"
 )
@@ -125,24 +128,30 @@ type TunnelSession struct {
 
 // TunnelResult is sent when a tunnel starts or stops.
 type TunnelResult struct {
-	Session *TunnelSession
-	Err     error
+	Session   *TunnelSession
+	Err       error
+	EarlyExit bool // true if SSH died before the grace period (startup failure)
 }
 
 // OpenTunnel starts an SSH connection through ProxyJump hosts.
-// The process is kept alive with ServerAliveInterval; result sent once the
-// process exits or fails to start.
-func OpenTunnel(p config.Profile) (*TunnelSession, <-chan TunnelResult) {
-	ch := make(chan TunnelResult, 1)
+// Returns the session plus two channels:
+//   - startCh: fires once after a 2-second grace period; nil = confirmed
+//     running (ports should be bound), non-nil = startup failure.
+//   - doneCh: fires once when the SSH process exits.
+func OpenTunnel(p config.Profile) (*TunnelSession, <-chan error, <-chan TunnelResult) {
+	startCh := make(chan error, 1)
+	doneCh := make(chan TunnelResult, 1)
 	sess := &TunnelSession{Profile: p}
 
 	go func() {
 		args := buildSSHArgs(p)
-		// Keep the tunnel alive without allocating a PTY
 		args = append(args,
 			"-o", "ServerAliveInterval=30",
 			"-o", "ServerAliveCountMax=3",
-			"-N", // no remote command
+			"-o", "ExitOnForwardFailure=yes", // exit if a port forward can't bind
+			"-o", "ConnectTimeout=15",
+			"-o", "BatchMode=yes", // never prompt — fail fast
+			"-N",                  // no remote command
 		)
 		cmd := exec.Command("ssh", args...)
 		sess.mu.Lock()
@@ -150,18 +159,84 @@ func OpenTunnel(p config.Profile) (*TunnelSession, <-chan TunnelResult) {
 		sess.mu.Unlock()
 
 		if err := cmd.Start(); err != nil {
-			ch <- TunnelResult{sess, fmt.Errorf("ssh start: %w", err)}
+			startErr := fmt.Errorf("ssh start: %w", err)
+			startCh <- startErr
+			doneCh <- TunnelResult{Session: sess, Err: startErr, EarlyExit: true}
 			return
 		}
-		// Block until process exits
-		err := cmd.Wait()
-		if err != nil {
-			ch <- TunnelResult{sess, fmt.Errorf("ssh exited: %w", err)}
-		} else {
-			ch <- TunnelResult{sess, nil}
+
+		// Race: did SSH exit before the grace period?
+		exitCh := make(chan error, 1)
+		go func() { exitCh <- cmd.Wait() }()
+
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case err := <-exitCh:
+			// Exited before grace period — startup failure.
+			timer.Stop()
+			var startErr error
+			if err != nil {
+				startErr = fmt.Errorf("ssh: %w", err)
+			} else {
+				startErr = fmt.Errorf("tunnel closed before establishing")
+			}
+			startCh <- startErr
+			doneCh <- TunnelResult{Session: sess, EarlyExit: true}
+
+		case <-timer.C:
+			// Still running — declare connected.
+			startCh <- nil
+			if err := <-exitCh; err != nil {
+				doneCh <- TunnelResult{Session: sess, Err: fmt.Errorf("ssh exited: %w", err)}
+			} else {
+				doneCh <- TunnelResult{Session: sess}
+			}
 		}
 	}()
-	return sess, ch
+
+	return sess, startCh, doneCh
+}
+
+// SessionCommand returns an exec.Cmd for an interactive SSH session with the
+// given profile. It is intended for use with tea.ExecProcess — the TUI suspends
+// and the user gets a full PTY shell. No port forwards or -N are added; those
+// belong to OpenTunnel.
+func SessionCommand(p config.Profile) *exec.Cmd {
+	args := []string{
+		"-p", fmt.Sprintf("%d", p.PortOrDefault()),
+		"-o", "ServerAliveInterval=30",
+		"-o", "ServerAliveCountMax=3",
+	}
+	if p.IdentityFile != "" {
+		args = append(args, "-i", p.IdentityFile)
+	}
+	if p.ProxyJump != "" {
+		args = append(args, "-J", p.ProxyJump)
+	}
+	args = append(args, hostSpec(p))
+	return exec.Command("ssh", args...)
+}
+
+// CheckLocalPort returns true if something is already listening on the given
+// local TCP port on either IPv4 (127.0.0.1) or IPv6 (::1).
+// SSH may bind local forwards to either family depending on the system, so
+// we probe each address explicitly rather than relying on the ambiguous ":"
+// wildcard that Go resolves to a single socket type.
+func CheckLocalPort(port int) bool {
+	if port <= 0 {
+		return false
+	}
+	for _, addr := range []string{
+		fmt.Sprintf("127.0.0.1:%d", port),
+		fmt.Sprintf("[::1]:%d", port),
+	} {
+		l, err := net.Listen("tcp", addr)
+		if err != nil {
+			return true // that address:port is in use
+		}
+		l.Close()
+	}
+	return false
 }
 
 // Close terminates the tunnel process.
@@ -206,7 +281,7 @@ func buildSSHArgs(p config.Profile) []string {
 	}
 	for _, fwd := range p.LocalForwards {
 		if fwd != "" {
-			args = append(args, "-L", fwd)
+			args = append(args, "-L", pinIPv4Bind(fwd))
 		}
 	}
 	for _, fwd := range p.RemoteForwards {
@@ -216,4 +291,25 @@ func buildSSHArgs(p config.Profile) []string {
 	}
 	args = append(args, hostSpec(p))
 	return args
+}
+
+// pinIPv4Bind ensures a local-forward spec binds explicitly to 127.0.0.1.
+// SSH may default to the IPv6 loopback (::1) on dual-stack hosts when no bind
+// address is given. We detect specs that already contain an explicit bind
+// address (anything whose first colon-delimited segment is not a bare port
+// number) and leave those unchanged.
+//
+//   "8080:host:80"              → "127.0.0.1:8080:host:80"
+//   "127.0.0.1:8080:host:80"   → unchanged
+//   "[::1]:8080:host:80"       → unchanged
+func pinIPv4Bind(fwd string) string {
+	i := strings.Index(fwd, ":")
+	if i < 0 {
+		return fwd
+	}
+	// If the first segment parses as a plain integer, there is no bind address.
+	if _, err := strconv.Atoi(fwd[:i]); err == nil {
+		return "127.0.0.1:" + fwd
+	}
+	return fwd
 }

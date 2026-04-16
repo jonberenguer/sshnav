@@ -88,6 +88,13 @@ type SSHFSTargetMsg struct{ Profile config.Profile }
 // ProxyTargetMsg selects a profile for the proxy panel.
 type ProxyTargetMsg struct{ Profile config.Profile }
 
+// TunnelStartedMsg is sent after the tunnel grace period confirms SSH is running.
+type TunnelStartedMsg struct {
+	Profile config.Profile
+	Session *sshutil.TunnelSession
+	Err     error
+}
+
 // TunnelClosedMsg is sent when a tunnel process exits.
 type TunnelClosedMsg struct{ Profile config.Profile }
 
@@ -149,15 +156,36 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sshfsPanel.loading = false
 
+	case TunnelStartedMsg:
+		if msg.Err != nil {
+			m.banner = "Tunnel: " + msg.Err.Error()
+			m.bannerType = bannerError
+		} else {
+			// Sub-models share state via m.proxyPanel.app (heap AppModel),
+			// NOT via m.activeTunnels (bubbletea-stored copy). Write there so
+			// activeTunnel() / buildItems() see the new entry immediately.
+			m.proxyPanel.app.activeTunnels = append(m.proxyPanel.app.activeTunnels, ActiveTunnel{
+				Profile: msg.Profile,
+				Session: msg.Session,
+			})
+			m.activeTunnels = m.proxyPanel.app.activeTunnels // keep bubbletea copy in sync
+			m.banner = "Tunnel connected."
+			m.bannerType = bannerSuccess
+		}
+		m.proxyPanel.loading = false
+
 	case TunnelResultMsg:
 		r := msg.Result
-		if r.Err != nil {
-			m.banner = "Tunnel: " + r.Err.Error()
-			m.bannerType = bannerError
-		}
-		// Remove from active tunnels on exit
+		// Only report an error for unexpected disconnects (not startup failures,
+		// which are already reported via TunnelStartedMsg, and not user-closed
+		// tunnels that were already removed from activeTunnels).
+		wasActive := m.hasTunnel(r.Session)
 		m.removeTunnel(r.Session)
 		m.proxyPanel.loading = false
+		if !r.EarlyExit && r.Err != nil && wasActive {
+			m.banner = "Tunnel disconnected: " + r.Err.Error()
+			m.bannerType = bannerError
+		}
 
 	case BannerMsg:
 		m.banner = msg.Text
@@ -240,14 +268,27 @@ func (m AppModel) View() string {
 
 // ---- helpers ----
 
+func (m *AppModel) hasTunnel(sess *sshutil.TunnelSession) bool {
+	// Read from the shared heap AppModel (what sub-models actually see).
+	for _, t := range m.proxyPanel.app.activeTunnels {
+		if t.Session == sess {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *AppModel) removeTunnel(sess *sshutil.TunnelSession) {
-	filtered := m.activeTunnels[:0]
-	for _, t := range m.activeTunnels {
+	// Update the shared heap AppModel so sub-models see the removal immediately.
+	app := m.proxyPanel.app
+	filtered := make([]ActiveTunnel, 0, len(app.activeTunnels))
+	for _, t := range app.activeTunnels {
 		if t.Session != sess {
 			filtered = append(filtered, t)
 		}
 	}
-	m.activeTunnels = filtered
+	app.activeTunnels = filtered
+	m.activeTunnels = filtered // keep bubbletea copy in sync
 }
 
 func (m AppModel) loadProfilesCmd() tea.Cmd {

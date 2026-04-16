@@ -81,6 +81,13 @@ func (m ProfileListModel) Update(msg tea.Msg) (ProfileListModel, tea.Cmd) {
 				p := sel.profile
 				return m, func() tea.Msg { return EditProfileMsg{&p} }
 			}
+		case "c":
+			sel, ok := m.list.SelectedItem().(profileItem)
+			if ok && sel.profile.Source == config.SourceApp {
+				dup := sel.profile
+				dup.Name = dup.Name + " (copy)"
+				return m, func() tea.Msg { return EditProfileMsg{&dup} }
+			}
 		case "d", "delete":
 			sel, ok := m.list.SelectedItem().(profileItem)
 			if ok && sel.profile.Source == config.SourceApp {
@@ -105,6 +112,7 @@ func (m ProfileListModel) View() string {
 
 	help := HelpLine(
 		"enter/e", "edit",
+		"c", "duplicate",
 		"n", "new",
 		"d", "delete",
 		"esc", "back",

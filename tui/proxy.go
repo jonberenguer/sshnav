@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -60,12 +61,21 @@ func (m ProxyModel) Update(msg tea.Msg) (ProxyModel, tea.Cmd) {
 				return m, func() tea.Msg { return BannerMsg{"No host configured.", bannerError} }
 			}
 			m.loading = true
-			sess, ch := sshutil.OpenTunnel(m.profile)
-			m.app.activeTunnels = append(m.app.activeTunnels, ActiveTunnel{
-				Profile: m.profile,
-				Session: sess,
-			})
-			return m, waitTunnelResult(ch)
+			sess, startCh, doneCh := sshutil.OpenTunnel(m.profile)
+			return m, tea.Batch(
+				waitTunnelStarted(m.profile, sess, startCh),
+				waitTunnelResult(doneCh),
+			)
+		case "s":
+			if m.profile.Host != "" {
+				cmd := sshutil.SessionCommand(m.profile)
+				return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+					if err != nil {
+						return BannerMsg{"SSH: " + err.Error(), bannerError}
+					}
+					return BannerMsg{"Session closed.", bannerInfo}
+				})
+			}
 		case "e":
 			if m.profile.Source == config.SourceApp {
 				p := m.profile
@@ -113,10 +123,15 @@ func (m ProxyModel) View() string {
 		fmtRow("Identity", orDash(p.IdentityFile)),
 	}
 	for i, fwd := range p.LocalForwards {
-		rows = append(rows, fmtRow(fmt.Sprintf("Local  %-2d", i+1), fwd))
+		port := parseLocalPort(fwd)
+		portOk := alive && sshutil.CheckLocalPort(port)
+		rows = append(rows, StatusIcon(portOk)+" "+fmtRow(fmt.Sprintf("Local  %-2d", i+1), fwd))
 	}
 	for i, fwd := range p.RemoteForwards {
-		rows = append(rows, fmtRow(fmt.Sprintf("Remote %-2d", i+1), fwd))
+		// The remote port lives on the SSH server, so we can't probe it locally.
+		// With ExitOnForwardFailure=yes, SSH exits if the bind failed, so alive
+		// implies the remote bind succeeded.
+		rows = append(rows, StatusIcon(alive)+" "+fmtRow(fmt.Sprintf("Remote %-2d", i+1), fwd))
 	}
 
 	box := StylePanel.Render(strings.Join(rows, "\n") + jumpChain)
@@ -135,6 +150,7 @@ func (m ProxyModel) View() string {
 
 	help := HelpLine(
 		"t", tunnelLabel,
+		"s", "ssh session",
 		"e", "edit profile",
 		"esc", "back",
 	)
@@ -156,11 +172,28 @@ func StyleAccentText(s string) string {
 	return lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render(s)
 }
 
-// waitTunnelResult converts a tunnel result channel into a tea.Cmd.
+// waitTunnelStarted waits for the tunnel grace-period confirmation.
+func waitTunnelStarted(profile config.Profile, sess *sshutil.TunnelSession, ch <-chan error) tea.Cmd {
+	return func() tea.Msg {
+		return TunnelStartedMsg{Profile: profile, Session: sess, Err: <-ch}
+	}
+}
+
+// waitTunnelResult waits for the tunnel process to exit.
 func waitTunnelResult(ch <-chan sshutil.TunnelResult) tea.Cmd {
 	return func() tea.Msg {
 		return TunnelResultMsg{<-ch}
 	}
+}
+
+// parseLocalPort extracts the local port number from a "localPort:host:remotePort" spec.
+func parseLocalPort(fwd string) int {
+	i := strings.Index(fwd, ":")
+	if i < 0 {
+		return 0
+	}
+	port, _ := strconv.Atoi(fwd[:i])
+	return port
 }
 
 func filterTunnels(tunnels []ActiveTunnel, sess *sshutil.TunnelSession) []ActiveTunnel {

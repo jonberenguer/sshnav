@@ -110,23 +110,38 @@ All fields except `name` and `host` are optional.
 | Key | Action |
 |-----|--------|
 | `↑↓` | Navigate profiles |
-| `Enter` | Open SSHFS panel (if mount configured) or Proxy panel |
-| `m` | Open SSHFS panel for selected profile |
-| `p` | Open Proxy panel for selected profile |
+| `Enter` | Open action submenu for selected profile |
+| `p` | Open Profile List / manager |
 | `n` | New profile |
 | `e` | Edit selected profile (app-managed only) |
-| `l` | Profile list / manager |
 | `/` | Filter profiles |
 | `Ctrl+C` | Quit (closes all active tunnels) |
 
-Live status dots (`●`/`○`) are polled every 5 seconds via `/proc/mounts`.
+Live status dots (`●`/`○`) are polled every 5 seconds. On wide terminals (≥ 90 columns) a right-hand detail panel shows proxy jump chain, SSHFS paths, and port forwards for the selected profile.
+
+#### Action Submenu
+
+Pressing `Enter` on a profile opens a submenu with context-aware actions:
+
+| Key | Action |
+|-----|--------|
+| `s` | Open interactive SSH session (TUI suspends, full PTY) |
+| `m` | Open SSHFS panel (only shown when mount is configured) |
+| `t` | Open Proxy/Tunnel panel |
+| `↑` / `k` | Move cursor up |
+| `↓` / `j` | Move cursor down |
+| `Enter` | Execute highlighted action |
+| `Esc` / `q` | Close submenu |
+
+Both letter shortcuts and cursor + Enter work interchangeably.
 
 ### Profile List
 
 | Key | Action |
 |-----|--------|
 | `↑↓` | Navigate |
-| `Enter` / `e` | Edit selected |
+| `Enter` / `e` | Edit selected (app-managed only) |
+| `c` | Duplicate selected profile as a new copy |
 | `n` | New profile |
 | `d` / `Delete` | Delete (app-managed only, confirms with y/N) |
 | `Esc` | Back to Dashboard |
@@ -158,10 +173,19 @@ Mount state is read from `/proc/mounts` (looks for `fuse.sshfs` entries).
 | Key | Action |
 |-----|--------|
 | `t` | Open / Close tunnel |
+| `s` | Open interactive SSH session |
 | `e` | Edit profile |
 | `Esc` | Back to Dashboard |
 
-The tunnel runs `ssh -N -J <proxy_jump> <host>` with `ServerAliveInterval=30`. The process is owned by sshnav and killed on close or quit.
+Each port forward is shown with a live status indicator:
+- **Local forwards**: `●` when something is listening on the local port, `○` when not.
+- **Remote forwards**: `●` when the tunnel is active (bind success implied by `ExitOnForwardFailure=yes`), `○` when not.
+
+#### Tunnel behaviour
+
+The tunnel runs `ssh -N` with `ExitOnForwardFailure=yes`, `ConnectTimeout=15`, `BatchMode=yes`, and `ServerAliveInterval=30`. A 2-second grace period confirms the process is still alive before reporting "connected" — this prevents false positive status when SSH fails immediately after start. The process is owned by sshnav and killed on close or quit.
+
+Local port forwards are pinned to `127.0.0.1` (e.g. `8080:host:80` → `127.0.0.1:8080:host:80`) to ensure both IPv4 and IPv6 listeners are created on dual-stack hosts.
 
 ---
 
@@ -191,3 +215,5 @@ sshnav/
 - `~/.ssh/config` hosts are **read-only** — they appear in the dashboard and panels but cannot be edited or deleted from within sshnav. Edit them in your normal SSH config workflow.
 - SSHFS mounts survive sshnav exiting (they are kernel FUSE mounts). SSH tunnels do **not** — they are subprocess-owned and are killed on quit.
 - `sshfs_opts` is passed as comma-separated `-o key=value` pairs. Refer to `man sshfs` for available options.
+- `LocalForward` / `RemoteForward` lines in `~/.ssh/config` use space-separated format (`9090 localhost:80`); sshnav normalises these to colon-separated format (`9090:localhost:80`) automatically at parse time.
+- Interactive SSH sessions (`s` key) suspend the TUI and hand the terminal directly to `ssh`. The TUI resumes cleanly after the session ends.
