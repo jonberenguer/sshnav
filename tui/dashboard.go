@@ -158,6 +158,7 @@ func NewDashboard(app *AppModel) DashboardModel {
 	l.Title = "sshnav"
 	l.Styles.Title = StyleTitle
 	l.SetShowStatusBar(false)
+	l.SetShowHelp(false)
 	l.SetFilteringEnabled(true)
 
 	return DashboardModel{app: app, list: l}
@@ -382,6 +383,27 @@ func (m DashboardModel) renderSubmenu(sel profileItem, width, height int) string
 		Render(content)
 }
 
+// renderEmptyPanel renders an always-visible placeholder panel so the list
+// width stays constant regardless of whether the selected profile has details
+// or the list is in filter mode.
+func (m DashboardModel) renderEmptyPanel(width, height int) string {
+	innerW := width - 4
+	innerH := height - 2
+	if innerW < 1 {
+		innerW = 1
+	}
+	if innerH < 1 {
+		innerH = 1
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorBorder).
+		Padding(0, 1).
+		Width(innerW).
+		Height(innerH).
+		Render("")
+}
+
 func (m DashboardModel) View() string {
 	tunnelCount := len(m.app.activeTunnels)
 	subtitle := fmt.Sprintf("  %d profile(s)  ·  %d active tunnel(s)", len(m.profiles), tunnelCount)
@@ -414,15 +436,19 @@ func (m DashboardModel) View() string {
 		listW := m.width - rpw
 		m.list.SetSize(listW, contentH)
 
-		// Only render the panel box when there's relevant content or the
-		// submenu is open; otherwise leave the column blank.
+		// In filter mode give the list full width — no panel to show.
+		if m.list.FilterState() == list.Filtering {
+			m.list.SetSize(m.width, contentH)
+			return lipgloss.JoinVertical(lipgloss.Left, header, m.list.View(), footer)
+		}
+
 		var rightView string
 		if m.showSubmenu {
 			rightView = m.renderSubmenu(m.submenuSel, rpw, contentH)
 		} else if sel, ok := m.list.SelectedItem().(profileItem); ok && hasDetails(sel.profile) {
 			rightView = m.renderDetails(sel.profile, rpw, contentH)
 		} else {
-			rightView = lipgloss.NewStyle().Width(rpw).Height(contentH).Render("")
+			rightView = m.renderEmptyPanel(rpw, contentH)
 		}
 
 		content := lipgloss.JoinHorizontal(lipgloss.Top, m.list.View(), rightView)
