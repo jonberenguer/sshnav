@@ -115,17 +115,18 @@ func (m SSHFSModel) View() string {
 		"e", "edit profile",
 		"esc", "back",
 	)
+	footer := StyleHelp.Copy().PaddingLeft(1).Render(help)
 
-	return lipgloss.JoinVertical(lipgloss.Left,
+	body := lipgloss.JoinVertical(lipgloss.Left,
 		StyleTitle.Render("⬡ SSHFS  "+p.Name),
 		StyleSubtitle.Render("  "+statusIcon+" "+statusText),
 		"",
 		box,
 		"",
 		"  "+actionStyle.Render(" m → "+mountLabel+" "),
-		"",
-		StyleHelp.Copy().PaddingLeft(1).Render(help),
 	)
+
+	return PageLayout(m.width, m.height, body, footer)
 }
 
 // waitMountResult converts a mount result channel into a tea.Cmd.

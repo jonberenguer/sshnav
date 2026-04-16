@@ -261,17 +261,7 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 // rightPanelWidth returns the width reserved for the right panel, or 0 if the
 // terminal is too narrow to bother.
 func (m DashboardModel) rightPanelWidth() int {
-	if m.width < 90 {
-		return 0
-	}
-	w := m.width / 3
-	if w < 32 {
-		w = 32
-	}
-	if w > 48 {
-		w = 48
-	}
-	return w
+	return RightPanelWidth(m.width)
 }
 
 // hasDetails reports whether a profile has any right-panel–worthy fields.
@@ -383,25 +373,9 @@ func (m DashboardModel) renderSubmenu(sel profileItem, width, height int) string
 		Render(content)
 }
 
-// renderEmptyPanel renders an always-visible placeholder panel so the list
-// width stays constant regardless of whether the selected profile has details
-// or the list is in filter mode.
+// renderEmptyPanel delegates to the shared package-level helper.
 func (m DashboardModel) renderEmptyPanel(width, height int) string {
-	innerW := width - 4
-	innerH := height - 2
-	if innerW < 1 {
-		innerW = 1
-	}
-	if innerH < 1 {
-		innerH = 1
-	}
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorBorder).
-		Padding(0, 1).
-		Width(innerW).
-		Height(innerH).
-		Render("")
+	return RenderEmptyPanel(width, height)
 }
 
 func (m DashboardModel) View() string {
@@ -451,11 +425,16 @@ func (m DashboardModel) View() string {
 			rightView = m.renderEmptyPanel(rpw, contentH)
 		}
 
-		content := lipgloss.JoinHorizontal(lipgloss.Top, m.list.View(), rightView)
+		// Pin each column to its exact dimensions so the panel is always
+		// flush with the right terminal edge regardless of list output width.
+		leftCol := lipgloss.NewStyle().Width(listW).Height(contentH).Render(m.list.View())
+		rightCol := lipgloss.NewStyle().Width(rpw).Height(contentH).Render(rightView)
+
+		content := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
 		return lipgloss.JoinVertical(lipgloss.Left, header, content, footer)
 	}
 
 	// Narrow terminal — full-width list.
 	m.list.SetSize(m.width, contentH)
-	return lipgloss.JoinVertical(lipgloss.Left, header, m.list.View(), footer)
+	return PageLayout(m.width, m.height, lipgloss.JoinVertical(lipgloss.Left, header, m.list.View()), footer)
 }

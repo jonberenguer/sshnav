@@ -117,7 +117,7 @@ All fields except `name` and `host` are optional.
 | `/` | Filter profiles |
 | `Ctrl+C` | Quit (closes all active tunnels) |
 
-Live status dots (`●`/`○`) are polled every 5 seconds. On wide terminals (≥ 90 columns) a right-hand detail panel shows proxy jump chain, SSHFS paths, and port forwards for the selected profile.
+Live status dots (`●`/`○`) are polled every 5 seconds. On wide terminals (≥ 90 columns) a right-hand detail panel shows proxy jump chain, SSHFS paths, and port forwards for the selected profile. In filter mode the panel is hidden and the list expands to full width.
 
 #### Action Submenu
 
@@ -145,6 +145,8 @@ Both letter shortcuts and cursor + Enter work interchangeably.
 | `n` | New profile |
 | `d` / `Delete` | Delete (app-managed only, confirms with y/N) |
 | `Esc` | Back to Dashboard |
+
+On wide terminals (≥ 90 columns) a right-hand panel shows the full details of the selected profile: source badge, SSH address, identity file, proxy jump, SSHFS paths and options, and all port forwards.
 
 ### Profile Edit / Create
 

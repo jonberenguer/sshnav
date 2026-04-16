@@ -125,6 +125,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Propagate to sub-models
 		m.dashboard.SetSize(m.width, m.height)
 		m.profileList.SetSize(m.width, m.height)
+		m.profileEdit.SetSize(m.width, m.height)
 		m.sshfsPanel.SetSize(m.width, m.height)
 		m.proxyPanel.SetSize(m.width, m.height)
 
@@ -197,6 +198,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case EditProfileMsg:
 		m.profileEdit = NewProfileEdit(&m)
+		m.profileEdit.SetSize(m.width, m.height)
 		if msg.Profile != nil {
 			m.profileEdit.LoadProfile(*msg.Profile)
 		}

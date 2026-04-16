@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -103,13 +104,97 @@ func (m ProfileListModel) Update(msg tea.Msg) (ProfileListModel, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m ProfileListModel) View() string {
-	listHeight := m.height - 6
-	if listHeight < 1 {
-		listHeight = 1
-	}
-	m.list.SetSize(m.width, listHeight)
+// renderProfileDetail renders a full profile detail panel for the profile list.
+// It shows all populated fields: SSH basics, proxy jump, SSHFS, and forwards.
+func (m ProfileListModel) renderProfileDetail(p config.Profile, width, height int) string {
+	label := lipgloss.NewStyle().Foreground(colorMuted).Bold(true)
+	value := lipgloss.NewStyle().Foreground(colorText)
 
+	var lines []string
+
+	// Header: name + source badge
+	badge, badgeSt := "[app]", StyleBadgeApp
+	if p.Source == config.SourceSSH {
+		badge, badgeSt = "[ssh]", StyleBadgeSSH
+	}
+	lines = append(lines,
+		badgeSt.Render(badge)+" "+lipgloss.NewStyle().Foreground(colorAccent).Bold(true).Render(p.Name),
+		"",
+	)
+
+	// SSH
+	lines = append(lines, label.Render("SSH"))
+	lines = append(lines, "  "+value.Render(addrStr(p)))
+	if p.IdentityFile != "" {
+		lines = append(lines, "  key  "+value.Render(p.IdentityFile))
+	}
+	lines = append(lines, "")
+
+	// Proxy Jump
+	if p.ProxyJump != "" {
+		lines = append(lines, label.Render("Proxy Jump"))
+		for _, hop := range strings.Split(p.ProxyJump, ",") {
+			lines = append(lines, "  "+value.Render(strings.TrimSpace(hop)))
+		}
+		lines = append(lines, "")
+	}
+
+	// SSHFS
+	if p.RemotePath != "" || p.MountPoint != "" {
+		lines = append(lines, label.Render("SSHFS"))
+		if p.RemotePath != "" {
+			lines = append(lines, "  remote  "+value.Render(p.RemotePath))
+		}
+		if p.MountPoint != "" {
+			lines = append(lines, "  mount   "+value.Render(p.MountPoint))
+		}
+		if p.SSHFSOpts != "" {
+			lines = append(lines, "  opts    "+value.Render(p.SSHFSOpts))
+		}
+		lines = append(lines, "")
+	}
+
+	// Local Forwards
+	if len(p.LocalForwards) > 0 {
+		lines = append(lines, label.Render("Local Forwards"))
+		for _, fwd := range p.LocalForwards {
+			lines = append(lines, "  "+value.Render(fwd))
+		}
+		lines = append(lines, "")
+	}
+
+	// Remote Forwards
+	if len(p.RemoteForwards) > 0 {
+		lines = append(lines, label.Render("Remote Forwards"))
+		for _, fwd := range p.RemoteForwards {
+			lines = append(lines, "  "+value.Render(fwd))
+		}
+	}
+
+	// Trim trailing blank lines
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+
+	innerW := width - 4
+	innerH := height - 2
+	if innerW < 1 {
+		innerW = 1
+	}
+	if innerH < 1 {
+		innerH = 1
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorBorder).
+		Padding(0, 1).
+		Width(innerW).
+		Height(innerH).
+		Render(strings.Join(lines, "\n"))
+}
+
+func (m ProfileListModel) View() string {
 	help := HelpLine(
 		"enter/e", "edit",
 		"c", "duplicate",
@@ -117,19 +202,47 @@ func (m ProfileListModel) View() string {
 		"d", "delete",
 		"esc", "back",
 	)
+	footer := StyleHelp.Copy().PaddingLeft(1).Render(help)
 
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		m.list.View(),
-		StyleHelp.Copy().PaddingLeft(1).Render(help),
-	)
+	contentH := m.height - lipgloss.Height(footer)
+	if contentH < 1 {
+		contentH = 1
+	}
 
+	rpw := RightPanelWidth(m.width)
+
+	if rpw > 0 {
+		listW := m.width - rpw
+		m.list.SetSize(listW, contentH)
+
+		var rightView string
+		if sel, ok := m.list.SelectedItem().(profileItem); ok {
+			rightView = m.renderProfileDetail(sel.profile, rpw, contentH)
+		} else {
+			rightView = RenderEmptyPanel(rpw, contentH)
+		}
+
+		leftCol := lipgloss.NewStyle().Width(listW).Height(contentH).Render(m.list.View())
+		rightCol := lipgloss.NewStyle().Width(rpw).Height(contentH).Render(rightView)
+
+		body := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
+		if m.confirm != "" {
+			body += "\n" + StyleWarn.Render(fmt.Sprintf(
+				"  Delete profile %q? [y/N]", m.confirm,
+			))
+		}
+		return PageLayout(m.width, m.height, body, footer)
+	}
+
+	// Narrow terminal — full-width list.
+	m.list.SetSize(m.width, contentH)
+	body := m.list.View()
 	if m.confirm != "" {
-		overlay := StyleWarn.Render(fmt.Sprintf(
+		body += "\n" + StyleWarn.Render(fmt.Sprintf(
 			"  Delete profile %q? [y/N]", m.confirm,
 		))
-		body = body + "\n" + overlay
 	}
-	return body
+	return PageLayout(m.width, m.height, body, footer)
 }
 
 // deleteProfileCmd removes a profile by name from app-managed profiles and saves.

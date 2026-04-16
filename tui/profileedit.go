@@ -57,7 +57,11 @@ type ProfileEditModel struct {
 	focused    int
 	isNew      bool
 	origName   string
+	width      int
+	height     int
 }
+
+func (m *ProfileEditModel) SetSize(w, h int) { m.width = w; m.height = h }
 
 func newForwardInput(placeholder string) textinput.Model {
 	t := textinput.New()
@@ -332,9 +336,9 @@ func (m ProfileEditModel) View() string {
 		"ctrl+s", "save",
 		"esc", "cancel",
 	)
-	sb.WriteString("\n" + StyleHelp.Copy().PaddingLeft(1).Render(help))
+	footer := StyleHelp.Copy().PaddingLeft(1).Render(help)
 
-	return sb.String()
+	return PageLayout(m.width, m.height, sb.String(), footer)
 }
 
 // saveProfileCmd upserts the profile and persists to disk.

@@ -154,17 +154,18 @@ func (m ProxyModel) View() string {
 		"e", "edit profile",
 		"esc", "back",
 	)
+	footer := StyleHelp.Copy().PaddingLeft(1).Render(help)
 
-	return lipgloss.JoinVertical(lipgloss.Left,
+	body := lipgloss.JoinVertical(lipgloss.Left,
 		StyleTitle.Render("⬡ SSH Proxy  "+p.Name),
 		StyleSubtitle.Render("  "+statusIcon+" "+statusText),
 		"",
 		box,
 		"",
 		"  "+actionStyle.Render(" t → "+tunnelLabel+" "),
-		"",
-		StyleHelp.Copy().PaddingLeft(1).Render(help),
 	)
+
+	return PageLayout(m.width, m.height, body, footer)
 }
 
 // StyleAccentText applies accent colour to a string without a full style struct.
