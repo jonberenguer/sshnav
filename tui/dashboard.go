@@ -188,10 +188,6 @@ func (m DashboardModel) buildItems() []list.Item {
 	return items
 }
 
-func (m DashboardModel) Init() tea.Cmd {
-	return tickCmd()
-}
-
 func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -199,10 +195,6 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 	case ProfilesLoadedMsg:
 		m.profiles = msg.Profiles
 		m.list.SetItems(m.buildItems())
-
-	case tickMsg:
-		m.list.SetItems(m.buildItems())
-		cmds = append(cmds, tickCmd())
 
 	case tea.KeyMsg:
 		if m.list.FilterState() == list.Filtering {

@@ -3,12 +3,19 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"sshnav/config"
 	"sshnav/sshutil"
 )
+
+type mountPollMsg struct{}
+
+func mountPollCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg { return mountPollMsg{} })
+}
 
 type SSHFSModel struct {
 	app     *AppModel
@@ -38,6 +45,9 @@ func (m SSHFSModel) isMounted() bool {
 
 func (m SSHFSModel) Update(msg tea.Msg) (SSHFSModel, tea.Cmd) {
 	switch msg := msg.(type) {
+	case mountPollMsg:
+		return m, mountPollCmd()
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc", "q":

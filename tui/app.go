@@ -111,7 +111,7 @@ func NewApp(profilesOnly bool) AppModel {
 }
 
 func (m AppModel) Init() tea.Cmd {
-	return m.loadProfilesCmd()
+	return tea.Batch(m.loadProfilesCmd(), tickCmd())
 }
 
 func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -188,6 +188,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.bannerType = bannerError
 		}
 
+	case tickMsg:
+		m.dashboard.list.SetItems(m.dashboard.buildItems())
+		cmds = append(cmds, tickCmd())
+
 	case BannerMsg:
 		m.banner = msg.Text
 		m.bannerType = msg.Kind
@@ -207,6 +211,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case SSHFSTargetMsg:
 		m.sshfsPanel.SetProfile(msg.Profile)
 		m.screen = ScreenSSHFS
+		cmds = append(cmds, mountPollCmd())
 
 	case ProxyTargetMsg:
 		m.proxyPanel.SetProfile(msg.Profile)

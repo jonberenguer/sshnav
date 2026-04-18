@@ -64,7 +64,7 @@ func (m ProfileListModel) Update(msg tea.Msg) (ProfileListModel, tea.Cmd) {
 			case "y", "Y":
 				name := m.confirm
 				m.confirm = ""
-				return m, deleteProfileCmd(m.app, name)
+				return m, deleteProfileCmd(name, m.profiles)
 			default:
 				m.confirm = ""
 			}
@@ -245,11 +245,11 @@ func (m ProfileListModel) View() string {
 	return PageLayout(m.width, m.height, body, footer)
 }
 
-// deleteProfileCmd removes a profile by name from app-managed profiles and saves.
-func deleteProfileCmd(app *AppModel, name string) tea.Cmd {
+// deleteProfileCmd removes a profile by name from the given list and saves.
+func deleteProfileCmd(name string, profiles []config.Profile) tea.Cmd {
 	return func() tea.Msg {
-		filtered := make([]config.Profile, 0, len(app.profiles))
-		for _, p := range app.profiles {
+		filtered := make([]config.Profile, 0, len(profiles))
+		for _, p := range profiles {
 			if !(p.Source == config.SourceApp && p.Name == name) {
 				filtered = append(filtered, p)
 			}
