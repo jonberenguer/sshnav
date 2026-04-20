@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"gopkg.in/yaml.v3"
 	"sshnav/config"
 	"sshnav/tui"
 )
@@ -20,17 +19,22 @@ func main() {
 			exportSSHConfig()
 			return
 		case "import-ssh-config":
-			importSSHConfig()
+			var path string
+			if len(os.Args) > 2 {
+				path = os.Args[2]
+			}
+			importSSHConfig(path)
 			return
 		}
 	}
 
 	fs := flag.NewFlagSet("sshnav", flag.ExitOnError)
 	profilesOnly := fs.Bool("profiles-only", false, "only load profiles from profiles.yaml, ignore ~/.ssh/config")
+	profilesFile := fs.String("profiles", "", "path to a custom profiles.yaml file (implies --profiles-only)")
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: sshnav [--profiles-only]\n")
+		fmt.Fprintf(os.Stderr, "usage: sshnav [--profiles-only] [--profiles /path/to/profiles.yaml]\n")
 		fmt.Fprintf(os.Stderr, "       sshnav export-ssh-config\n")
-		fmt.Fprintf(os.Stderr, "       sshnav import-ssh-config\n")
+		fmt.Fprintf(os.Stderr, "       sshnav import-ssh-config [/path/to/ssh_config]\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(os.Args[1:]); err != nil {
@@ -42,7 +46,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	app := tui.NewApp(*profilesOnly)
+	app := tui.NewApp(*profilesOnly, *profilesFile)
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "sshnav: %v\n", err)
@@ -50,21 +54,35 @@ func main() {
 	}
 }
 
-func importSSHConfig() {
-	profiles, err := config.LoadSSHConfigProfiles()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "sshnav: read ~/.ssh/config: %v\n", err)
-		os.Exit(1)
+func importSSHConfig(path string) {
+	var profiles []config.Profile
+	var err error
+	if path != "" {
+		profiles, err = config.LoadSSHConfigProfilesFrom(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "sshnav: read %s: %v\n", path, err)
+			os.Exit(1)
+		}
+	} else {
+		profiles, err = config.LoadSSHConfigProfiles()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "sshnav: read ~/.ssh/config: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	if len(profiles) == 0 {
-		fmt.Fprintln(os.Stderr, "sshnav: no hosts found in ~/.ssh/config")
+		src := "~/.ssh/config"
+		if path != "" {
+			src = path
+		}
+		fmt.Fprintf(os.Stderr, "sshnav: no hosts found in %s\n", src)
 		return
 	}
-	// Strip the SourceSSH marker — these will be treated as app profiles in the output
+	// Strip the SourceSSH marker — output is treated as app profiles
 	for i := range profiles {
 		profiles[i].Source = config.SourceApp
 	}
-	data, err := yaml.Marshal(profiles)
+	data, err := config.MarshalProfilesSpaced(profiles)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "sshnav: marshal yaml: %v\n", err)
 		os.Exit(1)

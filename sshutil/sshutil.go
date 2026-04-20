@@ -213,7 +213,18 @@ func SessionCommand(p config.Profile) *exec.Cmd {
 	if p.ProxyJump != "" {
 		args = append(args, "-J", p.ProxyJump)
 	}
+	if p.RemoteDir != "" {
+		// Force PTY allocation — SSH won't allocate one by default when a
+		// remote command is provided, which leaves the shell with no terminal.
+		args = append(args, "-t")
+	}
 	args = append(args, hostSpec(p))
+	if p.RemoteDir != "" {
+		// cd to the working directory then hand off to the login shell.
+		// Single-quote the path and escape any embedded single quotes.
+		escaped := "'" + strings.ReplaceAll(p.RemoteDir, "'", "'\\''") + "'"
+		args = append(args, "cd "+escaped+" && exec $SHELL -l")
+	}
 	return exec.Command("ssh", args...)
 }
 

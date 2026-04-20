@@ -18,6 +18,7 @@ const (
 	fieldUser
 	fieldPort
 	fieldIdentity
+	fieldRemoteDir
 	fieldRemotePath
 	fieldMountPoint
 	fieldSSHFSOpts
@@ -31,6 +32,7 @@ var fieldLabels = [fieldCount]string{
 	"User         ",
 	"Port         ",
 	"Identity File",
+	"Remote Dir   ",
 	"Remote Path  ",
 	"Mount Point  ",
 	"SSHFS Opts   ",
@@ -43,6 +45,7 @@ var fieldPlaceholders = [fieldCount]string{
 	"deploy (leave blank for default)",
 	"22",
 	"~/.ssh/id_ed25519 (optional)",
+	"/home/user (working dir on login, optional)",
 	"/home/user (for sshfs)",
 	"/mnt/my-server (for sshfs)",
 	"reconnect,cache=no (optional)",
@@ -50,15 +53,17 @@ var fieldPlaceholders = [fieldCount]string{
 }
 
 type ProfileEditModel struct {
-	app        *AppModel
-	inputs     [fieldCount]textinput.Model
-	localFwds  []textinput.Model
-	remoteFwds []textinput.Model
-	focused    int
-	isNew      bool
-	origName   string
-	width      int
-	height     int
+	app            *AppModel
+	inputs         [fieldCount]textinput.Model
+	localFwds      []textinput.Model
+	remoteFwds     []textinput.Model
+	focused        int
+	isNew          bool
+	origName       string
+	width          int
+	height         int
+	dirty          bool // true once any field has been edited
+	confirmDiscard bool // true when showing the unsaved-changes prompt
 }
 
 func (m *ProfileEditModel) SetSize(w, h int) { m.width = w; m.height = h }
@@ -124,6 +129,7 @@ func (m *ProfileEditModel) LoadProfile(p config.Profile) {
 		m.inputs[fieldPort].SetValue(strconv.Itoa(p.Port))
 	}
 	m.inputs[fieldIdentity].SetValue(p.IdentityFile)
+	m.inputs[fieldRemoteDir].SetValue(p.RemoteDir)
 	m.inputs[fieldRemotePath].SetValue(p.RemotePath)
 	m.inputs[fieldMountPoint].SetValue(p.MountPoint)
 	m.inputs[fieldSSHFSOpts].SetValue(p.SSHFSOpts)
@@ -181,6 +187,7 @@ func (m ProfileEditModel) validate() (config.Profile, error) {
 		User:           strings.TrimSpace(m.inputs[fieldUser].Value()),
 		Port:           port,
 		IdentityFile:   strings.TrimSpace(m.inputs[fieldIdentity].Value()),
+		RemoteDir:      strings.TrimSpace(m.inputs[fieldRemoteDir].Value()),
 		RemotePath:     strings.TrimSpace(m.inputs[fieldRemotePath].Value()),
 		MountPoint:     strings.TrimSpace(m.inputs[fieldMountPoint].Value()),
 		SSHFSOpts:      strings.TrimSpace(m.inputs[fieldSSHFSOpts].Value()),
@@ -194,9 +201,25 @@ func (m ProfileEditModel) validate() (config.Profile, error) {
 func (m ProfileEditModel) Update(msg tea.Msg) (ProfileEditModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Discard confirmation overlay takes priority over everything else.
+		if m.confirmDiscard {
+			switch msg.String() {
+			case "y", "Y":
+				m.confirmDiscard = false
+				return m, func() tea.Msg { return NavigateMsg{ScreenDashboard} }
+			default:
+				m.confirmDiscard = false
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "esc":
-			return m, func() tea.Msg { return NavigateMsg{ScreenProfileList} }
+			if m.dirty {
+				m.confirmDiscard = true
+				return m, nil
+			}
+			return m, func() tea.Msg { return NavigateMsg{ScreenDashboard} }
 		case "tab", "down":
 			m.setFocus((m.focused + 1) % m.totalFields())
 			return m, nil
@@ -211,6 +234,7 @@ func (m ProfileEditModel) Update(msg tea.Msg) (ProfileEditModel, tea.Cmd) {
 			if err != nil {
 				return m, func() tea.Msg { return BannerMsg{err.Error(), bannerError} }
 			}
+			m.dirty = false
 			return m, saveProfileCmd(m.app, p, m.origName)
 		case "ctrl+l":
 			t := newForwardInput("8080:localhost:80")
@@ -261,6 +285,11 @@ func (m ProfileEditModel) Update(msg tea.Msg) (ProfileEditModel, tea.Cmd) {
 			}
 		}
 	}
+	// Any key event that reaches here (character input, backspace, etc.)
+	// marks the form as modified.
+	if _, isKey := msg.(tea.KeyMsg); isKey {
+		m.dirty = true
+	}
 	return m, cmd
 }
 
@@ -281,6 +310,9 @@ func (m ProfileEditModel) View() string {
 			labelStyle = lipgloss.NewStyle().Foreground(colorAccent).Bold(true)
 		} else {
 			labelStyle = lipgloss.NewStyle().Foreground(colorMuted)
+		}
+		if i == fieldRemoteDir {
+			sb.WriteString(StyleMuted.Render("  ─── SSH Session ──────────────────────────") + "\n")
 		}
 		if i == fieldRemotePath {
 			sb.WriteString(StyleMuted.Render("  ─── SSHFS ────────────────────────────────") + "\n")
@@ -338,7 +370,11 @@ func (m ProfileEditModel) View() string {
 	)
 	footer := StyleHelp.Copy().PaddingLeft(1).Render(help)
 
-	return PageLayout(m.width, m.height, sb.String(), footer)
+	body := sb.String()
+	if m.confirmDiscard {
+		body += "\n" + StyleWarn.Render("  Discard unsaved changes? [y/N]")
+	}
+	return PageLayout(m.width, m.height, body, footer)
 }
 
 // saveProfileCmd upserts the profile and persists to disk.
@@ -360,7 +396,12 @@ func saveProfileCmd(app *AppModel, newProfile config.Profile, origName string) t
 		if !replaced {
 			updated = append(updated, newProfile)
 		}
-		err := config.SaveAppProfiles(updated)
+		var err error
+		if app.profilesPath != "" {
+			err = config.SaveAppProfilesTo(app.profilesPath, updated)
+		} else {
+			err = config.SaveAppProfiles(updated)
+		}
 		return ProfilesSavedMsg{Err: err}
 	}
 }

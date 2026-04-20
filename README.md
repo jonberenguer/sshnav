@@ -7,6 +7,17 @@
 > Review the code before use in any environment you care about.
 > Use at your own risk.
 
+> [!CAUTION]
+> **Known security considerations — to be addressed in a future release.**
+>
+> | Severity | Area | Detail |
+> |----------|------|--------|
+> | Medium | `sshfs_opts` flag injection | SSHFS options are split on commas and passed directly to `sshfs -o` with no allowlist. A crafted profile could supply dangerous sshfs flags (e.g. `allow_other`, `-f`, `-d`). Only use profiles from sources you trust. |
+> | Medium | ProxyJump / IdentityFile flag injection | Neither field is validated before being passed to the SSH subprocess. A value beginning with `-` could inject unexpected SSH flags. Only use profiles from sources you trust. |
+> | Low | `remote_dir` shell quoting | The working-directory field is single-quote–escaped before being sent as a remote command (`cd '<dir>' && exec $SHELL -l`). Standard POSIX escaping is applied, but unusual remote shell configurations could interpret the string differently. |
+> | Low | Mount-point TOCTOU | `os.MkdirAll` on the mount point before SSHFS runs has a narrow race window where a symlink could redirect the mount to an unintended path. |
+> | Info | SSH args visible in process list | Identity-file paths and proxy-jump hosts appear in the process argument list while sessions or tunnels are active and are visible to anyone who can run `ps` on the same host. This is inherent to the SSH CLI and cannot be addressed at the application level. |
+
 ---
 
 # sshnav
@@ -19,7 +30,7 @@ A terminal UI for managing SSHFS mounts and SSH ProxyJump tunnels — built with
 
 | Tool | Purpose |
 |------|---------|
-| Go ≥ 1.22 | build |
+| Go ≥ 1.24 | build |
 | `sshfs` | mounting remote filesystems |
 | `fusermount` | unmounting (part of `fuse` / `fuse3`) |
 | `ssh` | ProxyJump tunnels |
@@ -50,16 +61,16 @@ INSTALL_DIR=/usr/local/bin bash build.sh
 INSTALL_DIR=~/.local/bin bash build.sh
 ```
 
-> Builds run inside Docker (`golang:1.22-alpine` → `scratch`). No local Go toolchain required.
+> Builds run inside Docker (`golang:1.24-alpine` → `scratch`). No local Go toolchain required.
 
 ---
 
 ## Usage
 
 ```
-sshnav [--profiles-only]        Launch the TUI
-sshnav export-ssh-config        Convert profiles.yaml → ~/.ssh/config format (stdout)
-sshnav import-ssh-config        Convert ~/.ssh/config → profiles.yaml format (stdout)
+sshnav [flags]                                    Launch the TUI
+sshnav export-ssh-config                          Convert profiles.yaml → ~/.ssh/config format (stdout)
+sshnav import-ssh-config [/path/to/ssh_config]   Convert an SSH config file → profiles.yaml format (stdout)
 ```
 
 ### Flags
@@ -67,6 +78,7 @@ sshnav import-ssh-config        Convert ~/.ssh/config → profiles.yaml format (
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--profiles-only` | false | Skip `~/.ssh/config` — only load app-managed profiles |
+| `--profiles <path>` | — | Load profiles from a custom `.yaml` file instead of the default `~/.config/sshnav/profiles.yaml` (implies `--profiles-only`) |
 
 ---
 
@@ -85,6 +97,7 @@ sshnav import-ssh-config        Convert ~/.ssh/config → profiles.yaml format (
   user: admin
   port: 22
   identity_file: ~/.ssh/id_ed25519
+  remote_dir: /home/admin/projects
   remote_path: /mnt/data
   mount_point: /mnt/nas
   sshfs_opts: reconnect,ServerAliveInterval=15
@@ -111,7 +124,6 @@ All fields except `name` and `host` are optional.
 |-----|--------|
 | `↑↓` | Navigate profiles |
 | `Enter` | Open action submenu for selected profile |
-| `p` | Open Profile List / manager |
 | `n` | New profile |
 | `e` | Edit selected profile (app-managed only) |
 | `/` | Filter profiles |
@@ -123,30 +135,20 @@ Live status dots (`●`/`○`) are polled every 5 seconds. On wide terminals (�
 
 Pressing `Enter` on a profile opens a submenu with context-aware actions:
 
-| Key | Action |
-|-----|--------|
-| `s` | Open interactive SSH session (TUI suspends, full PTY) |
-| `m` | Open SSHFS panel (only shown when mount is configured) |
-| `t` | Open Proxy/Tunnel panel |
-| `↑` / `k` | Move cursor up |
-| `↓` / `j` | Move cursor down |
-| `Enter` | Execute highlighted action |
-| `Esc` / `q` | Close submenu |
+| Key | Action | Condition |
+|-----|--------|-----------|
+| `s` | Open interactive SSH session (TUI suspends, full PTY) | always |
+| `m` | Open SSHFS panel | only when mount is configured |
+| `t` | Open Proxy/Tunnel panel | always |
+| `e` | Edit profile | app-managed only |
+| `c` | Duplicate profile as a new copy | app-managed only |
+| `d` | Delete profile (confirms with y/N) | app-managed only |
+| `↑` / `k` | Move cursor up | — |
+| `↓` / `j` | Move cursor down | — |
+| `Enter` | Execute highlighted action | — |
+| `Esc` / `q` | Close submenu | — |
 
 Both letter shortcuts and cursor + Enter work interchangeably.
-
-### Profile List
-
-| Key | Action |
-|-----|--------|
-| `↑↓` | Navigate |
-| `Enter` / `e` | Edit selected (app-managed only) |
-| `c` | Duplicate selected profile as a new copy |
-| `n` | New profile |
-| `d` / `Delete` | Delete (app-managed only, confirms with y/N) |
-| `Esc` | Back to Dashboard |
-
-On wide terminals (≥ 90 columns) a right-hand panel shows the full details of the selected profile: source badge, SSH address, identity file, proxy jump, SSHFS paths and options, and all port forwards.
 
 ### Profile Edit / Create
 
@@ -155,10 +157,13 @@ On wide terminals (≥ 90 columns) a right-hand panel shows the full details of 
 | `Tab` / `↓` | Next field |
 | `Shift+Tab` / `↑` | Previous field |
 | `Ctrl+S` | Save |
-| `Enter` | Advance field (save on last) |
-| `Esc` | Cancel |
+| `Enter` | Advance to next field |
+| `Ctrl+L` | Add a local port forward |
+| `Ctrl+R` | Add a remote port forward |
+| `Ctrl+X` | Remove the focused port forward |
+| `Esc` | Cancel (prompts to discard if unsaved changes exist) |
 
-Fields are split into sections: **SSH**, **SSHFS**, and **Proxy**.
+Fields are grouped into sections: **SSH** (name, host, user, port, identity), **SSH Session** (remote working directory), **SSHFS** (remote path, mount point, options), **SSH Proxy** (proxy jump), and **Port Forwards**.
 
 ### SSHFS Panel
 
@@ -195,7 +200,7 @@ Local port forwards are pinned to `127.0.0.1` (e.g. `8080:host:80` → `127.0.0.
 
 ```
 sshnav/
-├── main.go                 # Bubbletea entrypoint
+├── main.go                 # CLI entry point, subcommands
 ├── config/
 │   └── config.go           # Profile types, YAML load/save, ~/.ssh/config parser
 ├── sshutil/
@@ -203,8 +208,7 @@ sshnav/
 └── tui/
     ├── styles.go           # Lipgloss styles & shared helpers
     ├── app.go              # Root model, screen router, shared state
-    ├── dashboard.go        # Profile list with live status indicators
-    ├── profilelist.go      # CRUD profile manager
+    ├── dashboard.go        # Profile list with live status indicators and action submenu
     ├── profileedit.go      # Text-input form for create/edit
     ├── sshfs.go            # Mount/unmount panel
     └── proxy.go            # ProxyJump tunnel panel
@@ -219,3 +223,4 @@ sshnav/
 - `sshfs_opts` is passed as comma-separated `-o key=value` pairs. Refer to `man sshfs` for available options.
 - `LocalForward` / `RemoteForward` lines in `~/.ssh/config` use space-separated format (`9090 localhost:80`); sshnav normalises these to colon-separated format (`9090:localhost:80`) automatically at parse time.
 - Interactive SSH sessions (`s` key) suspend the TUI and hand the terminal directly to `ssh`. The TUI resumes cleanly after the session ends.
+- `remote_dir` sets the working directory for interactive SSH sessions. When set, sshnav runs `cd '<dir>' && exec $SHELL -l` as the remote command with `-t` to ensure a PTY is allocated.

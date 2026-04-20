@@ -104,14 +104,15 @@ func tickCmd() tea.Cmd {
 // ---- DashboardModel ----
 
 type DashboardModel struct {
-	app         *AppModel
-	list        list.Model
-	profiles    []config.Profile
-	width       int
-	height      int
-	showSubmenu bool
-	submenuSel  profileItem
-	submenuIdx  int // cursor position within the submenu
+	app           *AppModel
+	list          list.Model
+	profiles      []config.Profile
+	width         int
+	height        int
+	showSubmenu   bool
+	submenuSel    profileItem
+	submenuIdx    int    // cursor position within the submenu
+	confirmDelete string // non-empty = showing delete confirmation for this profile name
 }
 
 // submenuEntry is one selectable item in the action submenu.
@@ -119,6 +120,7 @@ type submenuEntry struct{ key, label string }
 
 // submenuEntries returns the ordered action list for the currently open
 // submenu. Mount is only offered when the profile has SSHFS config.
+// Edit/Duplicate/Delete are only offered for app-managed profiles.
 func (m DashboardModel) submenuEntries() []submenuEntry {
 	p := m.submenuSel.profile
 	entries := []submenuEntry{{"s", "SSH Session"}}
@@ -126,6 +128,11 @@ func (m DashboardModel) submenuEntries() []submenuEntry {
 		entries = append(entries, submenuEntry{"m", "Mount SSHFS"})
 	}
 	entries = append(entries, submenuEntry{"t", "Tunnel / Proxy"})
+	if p.Source == config.SourceApp {
+		entries = append(entries, submenuEntry{"e", "Edit"})
+		entries = append(entries, submenuEntry{"c", "Duplicate"})
+		entries = append(entries, submenuEntry{"d", "Delete"})
+	}
 	return entries
 }
 
@@ -149,6 +156,21 @@ func (m DashboardModel) execSubmenuKey(key string) (DashboardModel, tea.Cmd) {
 		return m, func() tea.Msg { return SSHFSTargetMsg{p} }
 	case "t":
 		return m, func() tea.Msg { return ProxyTargetMsg{p} }
+	case "e":
+		if p.Source == config.SourceApp {
+			pCopy := p
+			return m, func() tea.Msg { return EditProfileMsg{&pCopy} }
+		}
+	case "c":
+		if p.Source == config.SourceApp {
+			dup := p
+			dup.Name = dup.Name + " (copy)"
+			return m, func() tea.Msg { return EditProfileMsg{&dup} }
+		}
+	case "d":
+		if p.Source == config.SourceApp {
+			m.confirmDelete = p.Name
+		}
 	}
 	return m, nil
 }
@@ -201,6 +223,19 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 			break
 		}
 
+		// Delete confirmation overlay.
+		if m.confirmDelete != "" {
+			switch msg.String() {
+			case "y", "Y":
+				name := m.confirmDelete
+				m.confirmDelete = ""
+				return m, deleteProfileCmd(name, m.profiles, m.app)
+			default:
+				m.confirmDelete = ""
+			}
+			return m, nil
+		}
+
 		// Submenu is open — handle its keys only.
 		if m.showSubmenu {
 			entries := m.submenuEntries()
@@ -217,7 +252,7 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 				}
 			case "enter":
 				return m.execSubmenuKey(entries[m.submenuIdx].key)
-			case "s", "m", "t":
+			case "s", "m", "t", "e", "c", "d":
 				return m.execSubmenuKey(msg.String())
 			}
 			return m, nil // block list navigation while submenu is open
@@ -231,8 +266,6 @@ func (m DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 				m.submenuSel = sel
 				m.submenuIdx = 0
 			}
-		case "p":
-			return m, func() tea.Msg { return NavigateMsg{ScreenProfileList} }
 		case "n":
 			return m, func() tea.Msg { return EditProfileMsg{nil} }
 		case "e":
@@ -377,7 +410,6 @@ func (m DashboardModel) View() string {
 	help := HelpLine(
 		"↑↓", "navigate",
 		"enter", "open",
-		"p", "profiles",
 		"n", "new",
 		"e", "edit",
 		"/", "filter",
@@ -423,10 +455,37 @@ func (m DashboardModel) View() string {
 		rightCol := lipgloss.NewStyle().Width(rpw).Height(contentH).Render(rightView)
 
 		content := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, rightCol)
-		return lipgloss.JoinVertical(lipgloss.Left, header, content, footer)
+		body := lipgloss.JoinVertical(lipgloss.Left, header, content, footer)
+		if m.confirmDelete != "" {
+			body += "\n" + StyleWarn.Render(fmt.Sprintf("  Delete profile %q? [y/N]", m.confirmDelete))
+		}
+		return body
 	}
 
 	// Narrow terminal — full-width list.
 	m.list.SetSize(m.width, contentH)
-	return PageLayout(m.width, m.height, lipgloss.JoinVertical(lipgloss.Left, header, m.list.View()), footer)
+	body := PageLayout(m.width, m.height, lipgloss.JoinVertical(lipgloss.Left, header, m.list.View()), footer)
+	if m.confirmDelete != "" {
+		body += "\n" + StyleWarn.Render(fmt.Sprintf("  Delete profile %q? [y/N]", m.confirmDelete))
+	}
+	return body
+}
+
+// deleteProfileCmd removes a profile by name from the given list and saves.
+func deleteProfileCmd(name string, profiles []config.Profile, app *AppModel) tea.Cmd {
+	return func() tea.Msg {
+		filtered := make([]config.Profile, 0, len(profiles))
+		for _, p := range profiles {
+			if !(p.Source == config.SourceApp && p.Name == name) {
+				filtered = append(filtered, p)
+			}
+		}
+		var err error
+		if app.profilesPath != "" {
+			err = config.SaveAppProfilesTo(app.profilesPath, filtered)
+		} else {
+			err = config.SaveAppProfiles(filtered)
+		}
+		return ProfilesSavedMsg{Err: err}
+	}
 }

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"sshnav/config"
 	"sshnav/sshutil"
@@ -11,7 +12,6 @@ type Screen int
 
 const (
 	ScreenDashboard Screen = iota
-	ScreenProfileList
 	ScreenProfileEdit
 	ScreenSSHFS
 	ScreenProxy
@@ -31,7 +31,6 @@ type AppModel struct {
 
 	// Sub-models (only the active one is updated/drawn)
 	dashboard   DashboardModel
-	profileList ProfileListModel
 	profileEdit ProfileEditModel
 	sshfsPanel  SSHFSModel
 	proxyPanel  ProxyModel
@@ -45,7 +44,8 @@ type AppModel struct {
 	bannerType bannerKind
 
 	// Options
-	profilesOnly bool // when true, ~/.ssh/config is not loaded
+	profilesOnly bool   // when true, ~/.ssh/config is not loaded
+	profilesPath string // non-empty overrides the default profiles.yaml path
 }
 
 type bannerKind int
@@ -100,10 +100,9 @@ type TunnelClosedMsg struct{ Profile config.Profile }
 
 // ---- Init / Update / View ----
 
-func NewApp(profilesOnly bool) AppModel {
-	m := AppModel{screen: ScreenDashboard, profilesOnly: profilesOnly}
+func NewApp(profilesOnly bool, profilesPath string) AppModel {
+	m := AppModel{screen: ScreenDashboard, profilesOnly: profilesOnly, profilesPath: profilesPath}
 	m.dashboard = NewDashboard(&m)
-	m.profileList = NewProfileList(&m)
 	m.profileEdit = NewProfileEdit(&m)
 	m.sshfsPanel = NewSSHFS(&m)
 	m.proxyPanel = NewProxy(&m)
@@ -124,7 +123,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		// Propagate to sub-models
 		m.dashboard.SetSize(m.width, m.height)
-		m.profileList.SetSize(m.width, m.height)
 		m.profileEdit.SetSize(m.width, m.height)
 		m.sshfsPanel.SetSize(m.width, m.height)
 		m.proxyPanel.SetSize(m.width, m.height)
@@ -133,8 +131,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.profiles = msg.Profiles
 		m.dashboard.profiles = m.profiles
 		m.dashboard.list.SetItems(m.dashboard.buildItems())
-		m.profileList.profiles = m.profiles
-		m.profileList.refreshItems()
 
 	case ProfilesSavedMsg:
 		if msg.Err != nil {
@@ -143,7 +139,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.banner = "Profile saved."
 			m.bannerType = bannerSuccess
-			m.screen = ScreenProfileList
+			m.screen = ScreenDashboard
 			cmds = append(cmds, m.loadProfilesCmd())
 		}
 
@@ -189,7 +185,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tickMsg:
-		m.dashboard.list.SetItems(m.dashboard.buildItems())
+		if m.dashboard.list.FilterState() != list.Filtering {
+			m.dashboard.list.SetItems(m.dashboard.buildItems())
+		}
 		cmds = append(cmds, tickCmd())
 
 	case BannerMsg:
@@ -232,8 +230,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.screen {
 	case ScreenDashboard:
 		m.dashboard, subCmd = m.dashboard.Update(msg)
-	case ScreenProfileList:
-		m.profileList, subCmd = m.profileList.Update(msg)
 	case ScreenProfileEdit:
 		m.profileEdit, subCmd = m.profileEdit.Update(msg)
 	case ScreenSSHFS:
@@ -250,8 +246,6 @@ func (m AppModel) View() string {
 	switch m.screen {
 	case ScreenDashboard:
 		body = m.dashboard.View()
-	case ScreenProfileList:
-		body = m.profileList.View()
 	case ScreenProfileEdit:
 		body = m.profileEdit.View()
 	case ScreenSSHFS:
@@ -300,12 +294,16 @@ func (m *AppModel) removeTunnel(sess *sshutil.TunnelSession) {
 
 func (m AppModel) loadProfilesCmd() tea.Cmd {
 	profilesOnly := m.profilesOnly
+	profilesPath := m.profilesPath
 	return func() tea.Msg {
 		var profiles []config.Profile
 		var err error
-		if profilesOnly {
+		switch {
+		case profilesPath != "":
+			profiles, err = config.LoadAppProfilesFrom(profilesPath)
+		case profilesOnly:
 			profiles, err = config.LoadAppProfiles()
-		} else {
+		default:
 			profiles, err = config.LoadAllProfiles()
 		}
 		if err != nil {

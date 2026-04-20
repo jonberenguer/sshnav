@@ -25,6 +25,7 @@ type Profile struct {
 	User         string `yaml:"user,omitempty"`
 	Port         int    `yaml:"port,omitempty"`
 	IdentityFile string `yaml:"identity_file,omitempty"`
+	RemoteDir    string `yaml:"remote_dir,omitempty"` // working directory for interactive SSH sessions
 
 	// SSHFS-specific
 	RemotePath string `yaml:"remote_path,omitempty"`
@@ -62,13 +63,9 @@ func appConfigPath() (string, error) {
 	return filepath.Join(dir, "profiles.yaml"), nil
 }
 
-// LoadAppProfiles reads ~/.config/sshnav/profiles.yaml.
-// Returns empty slice (not error) if file doesn't exist yet.
-func LoadAppProfiles() ([]Profile, error) {
-	path, err := appConfigPath()
-	if err != nil {
-		return nil, err
-	}
+// LoadAppProfilesFrom reads profiles from an explicit path.
+// Returns empty slice (not error) if the file doesn't exist yet.
+func LoadAppProfilesFrom(path string) ([]Profile, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return []Profile{}, nil
@@ -86,20 +83,44 @@ func LoadAppProfiles() ([]Profile, error) {
 	return profiles, nil
 }
 
-// SaveAppProfiles writes the full app-managed profile list atomically.
-func SaveAppProfiles(profiles []Profile) error {
+// LoadAppProfiles reads ~/.config/sshnav/profiles.yaml.
+func LoadAppProfiles() ([]Profile, error) {
 	path, err := appConfigPath()
 	if err != nil {
+		return nil, err
+	}
+	return LoadAppProfilesFrom(path)
+}
+
+// MarshalProfilesSpaced serialises profiles as a YAML list with a blank line
+// between each entry for readability.
+func MarshalProfilesSpaced(profiles []Profile) ([]byte, error) {
+	var buf strings.Builder
+	for i, p := range profiles {
+		block, err := yaml.Marshal([]Profile{p})
+		if err != nil {
+			return nil, err
+		}
+		if i > 0 {
+			buf.WriteByte('\n')
+		}
+		buf.Write(block)
+	}
+	return []byte(buf.String()), nil
+}
+
+// SaveAppProfilesTo writes the app-managed profile list atomically to an explicit path.
+func SaveAppProfilesTo(path string, profiles []Profile) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	// Filter to only app profiles before saving
 	var toSave []Profile
 	for _, p := range profiles {
 		if p.Source == SourceApp {
 			toSave = append(toSave, p)
 		}
 	}
-	data, err := yaml.Marshal(toSave)
+	data, err := MarshalProfilesSpaced(toSave)
 	if err != nil {
 		return err
 	}
@@ -110,16 +131,20 @@ func SaveAppProfiles(profiles []Profile) error {
 	return os.Rename(tmp, path)
 }
 
+// SaveAppProfiles writes the full app-managed profile list atomically to the default path.
+func SaveAppProfiles(profiles []Profile) error {
+	path, err := appConfigPath()
+	if err != nil {
+		return err
+	}
+	return SaveAppProfilesTo(path, profiles)
+}
+
 // ---- ~/.ssh/config parser (read-only) ----
 
-// LoadSSHConfigProfiles parses ~/.ssh/config and returns Host entries.
-// Wildcard (*) hosts are skipped.
-func LoadSSHConfigProfiles() ([]Profile, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	path := filepath.Join(home, ".ssh", "config")
+// LoadSSHConfigProfilesFrom parses an SSH config file at the given path and
+// returns Host entries. Wildcard (*) hosts are skipped.
+func LoadSSHConfigProfilesFrom(path string) ([]Profile, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return []Profile{}, nil
@@ -189,6 +214,15 @@ func LoadSSHConfigProfiles() ([]Profile, error) {
 		profiles = append(profiles, *current)
 	}
 	return profiles, scanner.Err()
+}
+
+// LoadSSHConfigProfiles parses ~/.ssh/config and returns Host entries.
+func LoadSSHConfigProfiles() ([]Profile, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	return LoadSSHConfigProfilesFrom(filepath.Join(home, ".ssh", "config"))
 }
 
 // normalizeForwardSpec converts ~/.ssh/config space-separated port-forward
