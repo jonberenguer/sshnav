@@ -21,6 +21,7 @@
 > | Info | PID reuse on tunnel reattach | Between reading a PID file and checking process liveness, the original SSH process could die and a new process could be assigned the same PID. Practically unexploitable on modern Linux. |
 > | Info | SSH args visible in process list | Identity-file paths and proxy-jump hosts appear in the process argument list while sessions or tunnels are active and are visible to anyone who can run `ps` on the same host. This is inherent to the SSH CLI and cannot be addressed at the application level. |
 > | Info | `~/.ssh/config` `Include` directive not handled | SSH config files using `Include` have the included files silently skipped. Hosts defined only in included files do not appear in sshnav. |
+> | Info | No reconnect rate limiting on tunnels | Pressing `t` rapidly while a tunnel is failing spawns repeated short-lived `ssh` processes with no backoff. Avoid rapid-fire retries against an unreachable host. |
 >
 > **Fixed**
 >
@@ -141,7 +142,7 @@ All fields except `name` and `host` are optional.
 | `n` | New profile |
 | `e` | Edit selected profile (app-managed only) |
 | `/` | Filter profiles |
-| `Ctrl+C` | Quit (closes all active tunnels) |
+| `Ctrl+C` | Quit (tunnels keep running; reattached on next launch) |
 
 Live status dots (`●`/`○`) are polled every 5 seconds. On wide terminals (≥ 90 columns) a right-hand detail panel shows proxy jump chain, SSHFS paths, and port forwards for the selected profile. In filter mode the panel is hidden and the list expands to full width.
 
@@ -233,7 +234,7 @@ sshnav/
 ## Notes
 
 - `~/.ssh/config` hosts are **read-only** — they appear in the dashboard and panels but cannot be edited or deleted from within sshnav. Edit them in your normal SSH config workflow.
-- SSHFS mounts survive sshnav exiting (they are kernel FUSE mounts). SSH tunnels do **not** — they are subprocess-owned and are killed on quit.
+- SSHFS mounts survive sshnav exiting (they are kernel FUSE mounts). SSH tunnels also survive exit — their PIDs are written to `~/.config/sshnav/tunnels/<name>.pid` and reattached automatically on next launch. Dead PID files are cleaned up at startup and during the 5-second tick.
 - `sshfs_opts` is passed as comma-separated `-o key=value` pairs. Refer to `man sshfs` for available options.
 - `LocalForward` / `RemoteForward` lines in `~/.ssh/config` use space-separated format (`9090 localhost:80`); sshnav normalises these to colon-separated format (`9090:localhost:80`) automatically at parse time.
 - Interactive SSH sessions (`s` key) suspend the TUI and hand the terminal directly to `ssh`. The TUI resumes cleanly after the session ends.
