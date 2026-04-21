@@ -54,6 +54,17 @@ func main() {
 	}
 }
 
+// stripControls removes ASCII control characters from s to prevent newline
+// injection when writing SSH config output.
+func stripControls(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 func importSSHConfig(path string) {
 	var profiles []config.Profile
 	var err error
@@ -106,28 +117,28 @@ func exportSSHConfig() {
 		if i > 0 {
 			sb.WriteByte('\n')
 		}
-		sb.WriteString("Host " + p.Name + "\n")
-		sb.WriteString("    HostName " + p.Host + "\n")
+		sb.WriteString("Host " + stripControls(p.Name) + "\n")
+		sb.WriteString("    HostName " + stripControls(p.Host) + "\n")
 		if p.User != "" {
-			sb.WriteString("    User " + p.User + "\n")
+			sb.WriteString("    User " + stripControls(p.User) + "\n")
 		}
 		if p.Port != 0 && p.Port != 22 {
 			sb.WriteString(fmt.Sprintf("    Port %d\n", p.Port))
 		}
 		if p.IdentityFile != "" {
-			sb.WriteString("    IdentityFile " + p.IdentityFile + "\n")
+			sb.WriteString("    IdentityFile " + stripControls(p.IdentityFile) + "\n")
 		}
 		if p.ProxyJump != "" {
-			sb.WriteString("    ProxyJump " + p.ProxyJump + "\n")
+			sb.WriteString("    ProxyJump " + stripControls(p.ProxyJump) + "\n")
 		}
 		for _, fwd := range p.LocalForwards {
 			if fwd != "" {
-				sb.WriteString("    LocalForward " + fwd + "\n")
+				sb.WriteString("    LocalForward " + stripControls(fwd) + "\n")
 			}
 		}
 		for _, fwd := range p.RemoteForwards {
 			if fwd != "" {
-				sb.WriteString("    RemoteForward " + fwd + "\n")
+				sb.WriteString("    RemoteForward " + stripControls(fwd) + "\n")
 			}
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -191,6 +192,12 @@ func LoadSSHConfigProfilesFrom(path string) ([]Profile, error) {
 		case "user":
 			if current != nil {
 				current.User = val
+			}
+		case "port":
+			if current != nil {
+				if p, err := strconv.Atoi(val); err == nil && p >= 1 && p <= 65535 {
+					current.Port = p
+				}
 			}
 		case "identityfile":
 			if current != nil {

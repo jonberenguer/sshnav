@@ -2,13 +2,16 @@ package sshutil
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"sshnav/config"
@@ -123,7 +126,14 @@ func Unmount(p config.Profile) <-chan MountResult {
 type TunnelSession struct {
 	Profile config.Profile
 	cmd     *exec.Cmd
+	pid     int // non-zero when cmd is nil (reattached from PID file)
 	mu      sync.Mutex
+}
+
+// AttachTunnel creates a TunnelSession for an already-running process identified
+// by pid. Used when restoring tunnels from PID files on app startup.
+func AttachTunnel(p config.Profile, pid int) *TunnelSession {
+	return &TunnelSession{Profile: p, pid: pid}
 }
 
 // TunnelResult is sent when a tunnel starts or stops.
@@ -250,12 +260,25 @@ func CheckLocalPort(port int) bool {
 	return false
 }
 
+// PID returns the OS process ID of the tunnel, or 0 if not started.
+func (s *TunnelSession) PID() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cmd != nil && s.cmd.Process != nil {
+		return s.cmd.Process.Pid
+	}
+	return s.pid
+}
+
 // Close terminates the tunnel process.
 func (s *TunnelSession) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cmd != nil && s.cmd.Process != nil {
 		return s.cmd.Process.Kill()
+	}
+	if s.pid > 0 {
+		return syscall.Kill(s.pid, syscall.SIGKILL)
 	}
 	return nil
 }
@@ -264,11 +287,92 @@ func (s *TunnelSession) Close() error {
 func (s *TunnelSession) IsRunning() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cmd == nil || s.cmd.Process == nil {
+	if s.cmd != nil {
+		if s.cmd.Process == nil {
+			return false
+		}
+		// Signal 0: check existence without sending a real signal
+		return s.cmd.ProcessState == nil
+	}
+	if s.pid <= 0 {
 		return false
 	}
-	// Signal 0: check existence without sending a real signal
-	return s.cmd.ProcessState == nil
+	// For reattached sessions, probe via signal 0.
+	return syscall.Kill(s.pid, 0) == nil
+}
+
+// ---- PID file helpers ----
+
+func tunnelPIDDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".config", "sshnav", "tunnels")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func pidFileName(profileName string) string {
+	safe := strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == 0 {
+			return '_'
+		}
+		return r
+	}, profileName)
+	return safe + ".pid"
+}
+
+// WriteTunnelPID saves a tunnel's PID to ~/.config/sshnav/tunnels/<name>.pid.
+func WriteTunnelPID(profileName string, pid int) error {
+	dir, err := tunnelPIDDir()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, pidFileName(profileName)), []byte(strconv.Itoa(pid)), 0o600)
+}
+
+// RemoveTunnelPID deletes the PID file for the given profile (best-effort).
+func RemoveTunnelPID(profileName string) {
+	dir, err := tunnelPIDDir()
+	if err != nil {
+		return
+	}
+	_ = os.Remove(filepath.Join(dir, pidFileName(profileName)))
+}
+
+// LoadTunnelPIDs scans ~/.config/sshnav/tunnels/ and returns a map of
+// profile name → PID for every PID file found.
+func LoadTunnelPIDs() (map[string]int, error) {
+	dir, err := tunnelPIDDir()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]int{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]int)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".pid") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil || pid <= 0 {
+			continue
+		}
+		result[strings.TrimSuffix(e.Name(), ".pid")] = pid
+	}
+	return result, nil
 }
 
 // ---- helpers ----

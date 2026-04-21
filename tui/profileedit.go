@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -111,6 +112,9 @@ func NewProfileEdit(app *AppModel) ProfileEditModel {
 		t := textinput.New()
 		t.Placeholder = fieldPlaceholders[i]
 		t.CharLimit = 256
+		if i == fieldPort {
+			t.CharLimit = 5 // max port is 65535
+		}
 		m.inputs[i] = t
 	}
 	m.inputs[fieldName].Focus()
@@ -125,9 +129,7 @@ func (m *ProfileEditModel) LoadProfile(p config.Profile) {
 	m.inputs[fieldName].SetValue(p.Name)
 	m.inputs[fieldHost].SetValue(p.Host)
 	m.inputs[fieldUser].SetValue(p.User)
-	if p.Port != 0 {
-		m.inputs[fieldPort].SetValue(strconv.Itoa(p.Port))
-	}
+	m.inputs[fieldPort].SetValue(strconv.Itoa(p.PortOrDefault()))
 	m.inputs[fieldIdentity].SetValue(p.IdentityFile)
 	m.inputs[fieldRemoteDir].SetValue(p.RemoteDir)
 	m.inputs[fieldRemotePath].SetValue(p.RemotePath)
@@ -168,15 +170,31 @@ func (m ProfileEditModel) validate() (config.Profile, error) {
 		port = p
 	}
 
+	identityFile := strings.TrimSpace(m.inputs[fieldIdentity].Value())
+	if identityFile != "" && strings.HasPrefix(identityFile, "-") {
+		return config.Profile{}, fmt.Errorf("identity file must not start with '-'")
+	}
+
+	proxyJump := strings.TrimSpace(m.inputs[fieldProxyJump].Value())
+	if proxyJump != "" && strings.HasPrefix(proxyJump, "-") {
+		return config.Profile{}, fmt.Errorf("proxy jump must not start with '-'")
+	}
+
 	var localFwds []string
 	for _, t := range m.localFwds {
 		if v := strings.TrimSpace(t.Value()); v != "" {
+			if err := validateForwardSpec(v); err != nil {
+				return config.Profile{}, fmt.Errorf("local forward %q: %w", v, err)
+			}
 			localFwds = append(localFwds, v)
 		}
 	}
 	var remoteFwds []string
 	for _, t := range m.remoteFwds {
 		if v := strings.TrimSpace(t.Value()); v != "" {
+			if err := validateForwardSpec(v); err != nil {
+				return config.Profile{}, fmt.Errorf("remote forward %q: %w", v, err)
+			}
 			remoteFwds = append(remoteFwds, v)
 		}
 	}
@@ -186,16 +204,33 @@ func (m ProfileEditModel) validate() (config.Profile, error) {
 		Host:           host,
 		User:           strings.TrimSpace(m.inputs[fieldUser].Value()),
 		Port:           port,
-		IdentityFile:   strings.TrimSpace(m.inputs[fieldIdentity].Value()),
+		IdentityFile:   identityFile,
 		RemoteDir:      strings.TrimSpace(m.inputs[fieldRemoteDir].Value()),
 		RemotePath:     strings.TrimSpace(m.inputs[fieldRemotePath].Value()),
 		MountPoint:     strings.TrimSpace(m.inputs[fieldMountPoint].Value()),
 		SSHFSOpts:      strings.TrimSpace(m.inputs[fieldSSHFSOpts].Value()),
-		ProxyJump:      strings.TrimSpace(m.inputs[fieldProxyJump].Value()),
+		ProxyJump:      proxyJump,
 		LocalForwards:  localFwds,
 		RemoteForwards: remoteFwds,
 		Source:         config.SourceApp,
 	}, nil
+}
+
+// validateForwardSpec checks that a port-forward spec has no whitespace, does
+// not start with '-', and contains at least two ':' separators.
+func validateForwardSpec(spec string) error {
+	for _, r := range spec {
+		if unicode.IsSpace(r) {
+			return fmt.Errorf("must not contain spaces")
+		}
+	}
+	if strings.HasPrefix(spec, "-") {
+		return fmt.Errorf("must not start with '-'")
+	}
+	if strings.Count(spec, ":") < 2 {
+		return fmt.Errorf("expected format port:host:port")
+	}
+	return nil
 }
 
 func (m ProfileEditModel) Update(msg tea.Msg) (ProfileEditModel, tea.Cmd) {
@@ -380,6 +415,12 @@ func (m ProfileEditModel) View() string {
 // saveProfileCmd upserts the profile and persists to disk.
 func saveProfileCmd(app *AppModel, newProfile config.Profile, origName string) tea.Cmd {
 	return func() tea.Msg {
+		// Reject duplicate names (excluding the profile being renamed).
+		for _, p := range app.profiles {
+			if p.Source == config.SourceApp && p.Name == newProfile.Name && p.Name != origName {
+				return ProfilesSavedMsg{Err: fmt.Errorf("a profile named %q already exists", newProfile.Name)}
+			}
+		}
 		updated := make([]config.Profile, 0, len(app.profiles)+1)
 		replaced := false
 		for _, p := range app.profiles {

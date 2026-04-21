@@ -98,6 +98,9 @@ type TunnelStartedMsg struct {
 // TunnelClosedMsg is sent when a tunnel process exits.
 type TunnelClosedMsg struct{ Profile config.Profile }
 
+// TunnelsRestoredMsg carries tunnels reattached from PID files at startup.
+type TunnelsRestoredMsg struct{ Tunnels []ActiveTunnel }
+
 // ---- Init / Update / View ----
 
 func NewApp(profilesOnly bool, profilesPath string) AppModel {
@@ -131,6 +134,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.profiles = msg.Profiles
 		m.dashboard.profiles = m.profiles
 		m.dashboard.list.SetItems(m.dashboard.buildItems())
+		cmds = append(cmds, m.loadTunnelsCmd())
+
+	case TunnelsRestoredMsg:
+		if len(msg.Tunnels) > 0 {
+			app := m.proxyPanel.app
+			app.activeTunnels = append(app.activeTunnels, msg.Tunnels...)
+			m.activeTunnels = app.activeTunnels
+		}
 
 	case ProfilesSavedMsg:
 		if msg.Err != nil {
@@ -166,6 +177,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Session: msg.Session,
 			})
 			m.activeTunnels = m.proxyPanel.app.activeTunnels // keep bubbletea copy in sync
+			_ = sshutil.WriteTunnelPID(msg.Profile.Name, msg.Session.PID())
 			m.banner = "Tunnel connected."
 			m.bannerType = bannerSuccess
 		}
@@ -185,7 +197,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tickMsg:
-		if m.dashboard.list.FilterState() != list.Filtering {
+		// Purge dead reattached tunnels (no doneCh watcher to clean them up).
+		app := m.proxyPanel.app
+		alive := app.activeTunnels[:0]
+		for _, t := range app.activeTunnels {
+			if t.Session.IsRunning() {
+				alive = append(alive, t)
+			} else {
+				sshutil.RemoveTunnelPID(t.Profile.Name)
+			}
+		}
+		app.activeTunnels = alive
+		m.activeTunnels = alive
+		if m.dashboard.list.FilterState() == list.Unfiltered {
 			m.dashboard.list.SetItems(m.dashboard.buildItems())
 		}
 		cmds = append(cmds, tickCmd())
@@ -217,10 +241,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
-			// Close all tunnels before quitting
-			for _, t := range m.activeTunnels {
-				_ = t.Session.Close()
-			}
+			// Tunnels are intentionally left running — PID files allow sshnav
+			// to reattach them on next launch.
 			return m, tea.Quit
 		}
 	}
@@ -290,6 +312,31 @@ func (m *AppModel) removeTunnel(sess *sshutil.TunnelSession) {
 	}
 	app.activeTunnels = filtered
 	m.activeTunnels = filtered // keep bubbletea copy in sync
+	sshutil.RemoveTunnelPID(sess.Profile.Name)
+}
+
+func (m AppModel) loadTunnelsCmd() tea.Cmd {
+	profiles := m.profiles
+	return func() tea.Msg {
+		pids, err := sshutil.LoadTunnelPIDs()
+		if err != nil || len(pids) == 0 {
+			return TunnelsRestoredMsg{}
+		}
+		var tunnels []ActiveTunnel
+		for _, p := range profiles {
+			pid, ok := pids[p.Name]
+			if !ok {
+				continue
+			}
+			sess := sshutil.AttachTunnel(p, pid)
+			if sess.IsRunning() {
+				tunnels = append(tunnels, ActiveTunnel{Profile: p, Session: sess})
+			} else {
+				sshutil.RemoveTunnelPID(p.Name)
+			}
+		}
+		return TunnelsRestoredMsg{tunnels}
+	}
 }
 
 func (m AppModel) loadProfilesCmd() tea.Cmd {
