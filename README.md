@@ -14,24 +14,24 @@
 >
 > | Severity | Area | Detail |
 > |----------|------|--------|
-> | Medium | `sshfs_opts` flag injection | SSHFS options are split on commas and passed directly to `sshfs -o` with no allowlist. A crafted profile could supply dangerous sshfs flags (e.g. `allow_other`, `-f`, `-d`). Only use profiles from sources you trust. |
 > | Low | `remote_dir` shell quoting | The working-directory field is single-quote–escaped before being sent as a remote command (`cd '<dir>' && exec $SHELL -l`). Standard POSIX escaping is applied, but unusual remote shell configurations could interpret the string differently. |
-> | Low | Mount-point TOCTOU | `os.MkdirAll` on the mount point before SSHFS runs has a narrow race window where a symlink could redirect the mount to an unintended path. |
-> | Low | PID filename collision | Profile names that differ only by `/` vs `_` map to the same tunnel PID file. The second active tunnel silently overwrites the first's PID entry. |
 > | Info | PID reuse on tunnel reattach | Between reading a PID file and checking process liveness, the original SSH process could die and a new process could be assigned the same PID. Practically unexploitable on modern Linux. |
 > | Info | SSH args visible in process list | Identity-file paths and proxy-jump hosts appear in the process argument list while sessions or tunnels are active and are visible to anyone who can run `ps` on the same host. This is inherent to the SSH CLI and cannot be addressed at the application level. |
 > | Info | `~/.ssh/config` `Include` directive not handled | SSH config files using `Include` have the included files silently skipped. Hosts defined only in included files do not appear in sshnav. |
-> | Info | No reconnect rate limiting on tunnels | Pressing `t` rapidly while a tunnel is failing spawns repeated short-lived `ssh` processes with no backoff. Avoid rapid-fire retries against an unreachable host. |
 >
 > **Fixed**
 >
 > | Severity | Area | Detail |
 > |----------|------|--------|
+> | Medium | `sshfs_opts` flag injection | Each option is now rejected at mount time if it starts with `-`, preventing injection of dangerous sshfs flags. |
 > | Medium | `export-ssh-config` newline injection | Profile field values are now stripped of ASCII control characters before being written to SSH config output, preventing newline injection into the result. |
 > | Medium | ProxyJump / IdentityFile flag injection | Both fields are now rejected at save time if they start with `-`, preventing unexpected SSH flag injection. |
+> | Low | Mount-point TOCTOU | After `os.MkdirAll`, `os.Lstat` confirms the path is a real directory and not a symlink before SSHFS mounts. |
+> | Low | PID filename collision | PID filenames now use hex-encoding of the profile name, making every distinct name produce a distinct filename. |
 > | Low | Port forward spec not validated | Local and remote forward specs are now validated to contain at least two `:` separators, no whitespace, and no leading `-` before being saved. |
 > | Low | `~/.ssh/config` `Port` field silently ignored | The SSH config parser now reads the `Port` directive, so hosts imported from `~/.ssh/config` with non-22 ports connect correctly. |
 > | Low | Duplicate profile names not prevented | Saving a profile now rejects names that collide with an existing profile, preventing ambiguous PID file state and edit/delete behaviour. |
+> | Info | No reconnect rate limiting on tunnels | A 5-second cooldown is enforced between successive tunnel open attempts for the same profile, preventing rapid-fire retries against an unreachable host. |
 
 ---
 

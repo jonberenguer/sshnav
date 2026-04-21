@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -12,11 +13,12 @@ import (
 )
 
 type ProxyModel struct {
-	app     *AppModel
-	profile config.Profile
-	loading bool
-	width   int
-	height  int
+	app               *AppModel
+	profile           config.Profile
+	loading           bool
+	lastTunnelAttempt time.Time
+	width             int
+	height            int
 }
 
 func NewProxy(app *AppModel) ProxyModel {
@@ -60,7 +62,15 @@ func (m ProxyModel) Update(msg tea.Msg) (ProxyModel, tea.Cmd) {
 			if m.profile.Host == "" {
 				return m, func() tea.Msg { return BannerMsg{"No host configured.", bannerError} }
 			}
+			const tunnelCooldown = 5 * time.Second
+			if cooldown := tunnelCooldown - time.Since(m.lastTunnelAttempt); cooldown > 0 {
+				secs := int(cooldown.Seconds()) + 1
+				return m, func() tea.Msg {
+					return BannerMsg{fmt.Sprintf("Please wait %ds before retrying.", secs), bannerInfo}
+				}
+			}
 			m.loading = true
+			m.lastTunnelAttempt = time.Now()
 			sess, startCh, doneCh := sshutil.OpenTunnel(m.profile)
 			return m, tea.Batch(
 				waitTunnelStarted(m.profile, sess, startCh),

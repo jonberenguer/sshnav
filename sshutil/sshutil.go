@@ -2,6 +2,7 @@ package sshutil
 
 import (
 	"bufio"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -63,6 +64,20 @@ func Mount(p config.Profile) <-chan MountResult {
 			ch <- MountResult{p, fmt.Errorf("create mount point: %w", err)}
 			return
 		}
+		// TOCTOU guard: confirm the path is a real directory, not a symlink.
+		info, err := os.Lstat(p.MountPoint)
+		if err != nil {
+			ch <- MountResult{p, fmt.Errorf("stat mount point: %w", err)}
+			return
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			ch <- MountResult{p, fmt.Errorf("mount point %q is a symbolic link", p.MountPoint)}
+			return
+		}
+		if !info.IsDir() {
+			ch <- MountResult{p, fmt.Errorf("mount point %q is not a directory", p.MountPoint)}
+			return
+		}
 
 		// Build sshfs argument list
 		remote := fmt.Sprintf("%s:%s", hostSpec(p), p.RemotePath)
@@ -80,9 +95,14 @@ func Mount(p config.Profile) <-chan MountResult {
 		if p.SSHFSOpts != "" {
 			for _, opt := range strings.Split(p.SSHFSOpts, ",") {
 				opt = strings.TrimSpace(opt)
-				if opt != "" {
-					args = append(args, "-o", opt)
+				if opt == "" {
+					continue
 				}
+				if strings.HasPrefix(opt, "-") {
+					ch <- MountResult{p, fmt.Errorf("sshfs_opts: option %q must not start with '-'", opt)}
+					return
+				}
+				args = append(args, "-o", opt)
 			}
 		}
 
@@ -315,14 +335,10 @@ func tunnelPIDDir() (string, error) {
 	return dir, nil
 }
 
+// pidFileName hex-encodes the profile name so that any two distinct names
+// always produce distinct filenames (no character-substitution collisions).
 func pidFileName(profileName string) string {
-	safe := strings.Map(func(r rune) rune {
-		if r == '/' || r == '\\' || r == 0 {
-			return '_'
-		}
-		return r
-	}, profileName)
-	return safe + ".pid"
+	return hex.EncodeToString([]byte(profileName)) + ".pid"
 }
 
 // WriteTunnelPID saves a tunnel's PID to ~/.config/sshnav/tunnels/<name>.pid.
@@ -362,6 +378,11 @@ func LoadTunnelPIDs() (map[string]int, error) {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".pid") {
 			continue
 		}
+		stem := strings.TrimSuffix(e.Name(), ".pid")
+		nameBytes, err := hex.DecodeString(stem)
+		if err != nil {
+			continue // not written by us (e.g. old-format file)
+		}
 		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			continue
@@ -370,7 +391,7 @@ func LoadTunnelPIDs() (map[string]int, error) {
 		if err != nil || pid <= 0 {
 			continue
 		}
-		result[strings.TrimSuffix(e.Name(), ".pid")] = pid
+		result[string(nameBytes)] = pid
 	}
 	return result, nil
 }

@@ -11,18 +11,18 @@
 | # | Severity | Area | Status |
 |---|----------|------|--------|
 | 1 | Medium | `export-ssh-config` newline injection | Fixed |
-| 2 | Medium | `sshfs_opts` flag injection | Open |
+| 2 | Medium | `sshfs_opts` flag injection | Fixed |
 | 3 | Medium | ProxyJump / IdentityFile flag injection | Fixed |
 | 4 | Low | Port forward spec not validated | Fixed |
 | 5 | Low | `~/.ssh/config` `Port` field silently ignored | Fixed |
 | 6 | Low | Duplicate profile names not prevented | Fixed |
-| 7 | Low | PID filename collision after sanitization | Open |
+| 7 | Low | PID filename collision after sanitization | Fixed |
 | 8 | Low | `remote_dir` shell quoting | Open |
-| 9 | Low | Mount-point TOCTOU | Open |
+| 9 | Low | Mount-point TOCTOU | Fixed |
 | 10 | Info | PID reuse race on tunnel reattach | Open |
 | 11 | Info | `~/.ssh/config` `Include` directive not handled | Open |
 | 12 | Info | SSH args visible in process list | Open |
-| 13 | Info | No reconnect rate limiting on tunnels | Open |
+| 13 | Info | No reconnect rate limiting on tunnels | Fixed |
 
 ---
 
